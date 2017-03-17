@@ -1,1 +1,82 @@
 # deploy-yeti-in-ubuntu-server-with-gunicorn-and-nginx
+
+install virtualenv
+mkdir yeti-project
+cd yeti-project
+virtualenv venv
+source venv/bin/activate
+pip install gunicorn
+git clone https://github.com/TAXIIProject/yeti.git
+pip install -r requirements.txt
+cd yeti
+python manage.py syncdb
+python manage.py collectionstatic
+python manage.py runserver 0.0.0.0:8000
+deactivate
+cd ../
+sudo apt-get install nginx
+
+create a file gunicorn_start.sh in yeti-project and paste the following lines
+---------------------------------------------------------
+#!/bin/bash
+
+NAME="yeti"                                  # Name of the application
+DJANGODIR=/home/ubuntu/yeti-project/yeti             # Django project directory
+SOCKFILE=/home/ubuntu/yeti-project/yeti/gunicorn.sock  # we will communicte using this unix socket
+USER=ubuntu                                       # the user to run as
+GROUP=ubuntu                                     # the group to run as
+NUM_WORKERS=3                                     # how many worker processes should Gunicorn spawn
+DJANGO_SETTINGS_MODULE=yeti.settings             # which settings file should Django use
+DJANGO_WSGI_MODULE=yeti.wsgi                     # WSGI module name
+
+echo "Starting $NAME as `whoami`"
+
+# Activate the virtual environment
+cd $DJANGODIR
+source /home/ubuntu/yeti-project/venv/bin/activate
+export DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE
+export PYTHONPATH=$DJANGODIR:$PYTHONPATH
+
+# Create the run directory if it doesn't exist
+RUNDIR=$(dirname $SOCKFILE)
+test -d $RUNDIR || mkdir -p $RUNDIR
+
+# Start your Django Unicorn
+# Programs meant to be run under supervisor should not daemonize themselves (do not use --daemon)
+exec gunicorn ${DJANGO_WSGI_MODULE}:application \
+  --name $NAME \
+  --workers $NUM_WORKERS \
+  --user=$USER --group=$GROUP \
+  --bind=unix:$SOCKFILE \
+  --log-level=debug \
+  --log-file=-
+
+----------------------------------------------------------
+
+Add the following lines in /etc/nginx/sites-available/default
+
+upstream yeti {
+  # fail_timeout=0 means we always retry an upstream even if it failed
+  # to return a good HTTP response (in case the Unicorn master nukes a
+  # single worker for timing out).
+  server unix:/home/ubuntu/yeti-project/yeti/gunicorn.sock fail_timeout=0;
+}
+
+and change/add following lines of  "server" of /etc/nginx/sites-available/default
+location / {
+                # First attempt to serve request as file, then
+                # as directory, then fall back to displaying a 404.
+                # try_files $uri $uri/ =404;
+                proxy_pass http://yeti/;
+        }
+        location /static/ {
+                alias /home/ubuntu/yeti-project/yeti/yeti/extras/static/;
+        }
+
+        location /media/ {
+                alias /home/ubuntu/yeti-project/yeti/yeti/static/media;
+        }
+
+start nginx and execute the gunicorn_start.sh 
+
+
